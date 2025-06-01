@@ -1,0 +1,223 @@
+
+
+import streamlit as st
+import torch
+from PIL import Image
+import os
+import sqlite3
+import hashlib
+
+# Initialize the database
+def init_db():
+    try:
+        conn = sqlite3.connect('users.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL
+            )
+        ''')
+        conn.commit()
+    except Exception as e:
+        st.markdown('<p style="color: red;">Database initialization failed.</p>', unsafe_allow_html=True)
+    finally:
+        conn.close()
+
+def register_user(username, password):
+    try:
+        conn = sqlite3.connect('users.db')
+        cursor = conn.cursor()
+        hashed_password = hashlib.sha256(password.encode()).hexdigest()
+        cursor.execute('''
+            INSERT INTO users (username, password)
+            VALUES (?, ?)
+        ''', (username, hashed_password))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    except Exception as e:
+        st.markdown('<p style="color: red;">Registration failed.</p>', unsafe_allow_html=True)
+        return False
+    finally:
+        conn.close()
+
+def authenticate_user(username, password):
+    try:
+        conn = sqlite3.connect('users.db')
+        cursor = conn.cursor()
+        hashed_password = hashlib.sha256(password.encode()).hexdigest()
+        cursor.execute('''
+            SELECT * FROM users
+            WHERE username = ? AND password = ?
+        ''', (username, hashed_password))
+        user = cursor.fetchone()
+        return user is not None
+    except Exception as e:
+        st.markdown('<p style="color: red;">Authentication failed.</p>', unsafe_allow_html=True)
+        return False
+    finally:
+        conn.close()
+
+# Initialize database
+init_db()
+
+# Streamlit app
+st.title("INTELLIGENT VEHICLE DAMAGE ASSESSMENT & COST ESTIMATOR FOR INSURANCE COMPANIES")
+
+# Initialize session state
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+if 'username' not in st.session_state:
+    st.session_state.username = None
+if 'page' not in st.session_state:
+    st.session_state.page = 'Home'
+
+# Page navigation
+pages = ["Home", "Login", "Register", "Assessment", "Logout"]
+page = st.sidebar.selectbox("Select Page", pages)
+
+# Handle logout
+if page == "Logout":
+    st.session_state.logged_in = False
+    st.session_state.username = None
+    st.session_state.page = "Home"  # Redirect to home page
+    st.markdown('<p style="color: green;">You have been logged out.</p>', unsafe_allow_html=True)
+
+# Page handling
+if page == "Home":
+    st.header("Welcome to the Intelligent Vehicle Damage Assessment & Cost Estimator")
+    st.write("This application allows you to assess vehicle damage and estimate repair costs.")
+
+elif page == "Register":
+    st.header("Register")
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+    if st.button("Register"):
+        if register_user(username, password):
+            st.markdown('<p style="color: green;">Registration successful! You can now log in.</p>', unsafe_allow_html=True)
+        else:
+            st.markdown('<p style="color: red;">Username already exists or registration failed. Please choose a different username.</p>', unsafe_allow_html=True)
+
+elif page == "Login":
+    st.header("Login")
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+    if st.button("Login"):
+        if authenticate_user(username, password):
+            st.session_state.logged_in = True
+            st.session_state.username = username
+            st.session_state.page = "Assessment"  # Redirect to assessment page
+            st.markdown('<p style="color: green;">Login successful! You can now access the assessment page.</p>', unsafe_allow_html=True)
+        else:
+            st.markdown('<p style="color: red;">Invalid username or password.</p>', unsafe_allow_html=True)
+
+elif page == "Assessment":
+    if not st.session_state.logged_in:
+        st.warning("Please log in to access the assessment page.")
+    else:
+        # Model paths
+        MODEL_PATHS = {
+            "4wheeler": r'/content/drive/MyDrive/CODE_OBJECT_DETECTION/yolov5/runs/train/exp5/weights/best.pt',
+            "2wheeler": r'/content/drive/MyDrive/CODE_OBJECT_DETECTION/yolov5/runs/train/exp7/weights/best.pt',
+            "6wheeler": r'/content/drive/MyDrive/CODE_OBJECT_DETECTION/yolov5/runs/train/exp/weights/best.pt'
+        }
+
+        # Part costs
+        PARTS = {
+            "2wheeler": {
+                'broken': 50000,
+                'Scratch': 1500,
+                'headlight': 2500,
+                'seat': 1500,
+                'tire': 800,
+                'mirror': 300
+            },
+            "4wheeler": {
+                '0': 3000,
+                '1': 3500,
+                '10': 4000,
+                '11': 4500,
+                '2': 5000,
+                '3': 2500,
+                '4': 2000,
+                '5': 1500,
+                '6': 1000,
+                '7': 1200,
+                '8': 1600,
+                '9': 1800,
+                'Bumper': 8000,
+                'Fender': 6000,
+                'Front-Windshield': 7000,
+                'Rear-Windshield': 7000,
+                'Side-Mirror': 1500,
+                'Side-Screen': 2000,
+                'door': 13000,
+                'headlamp': 2900,
+                'hood': 4000
+            },
+            "6wheeler": {
+                'Rearlamp -L- - damaged': 1000,
+                'Rearlamp -L- - good': 0,
+                'Rearlamp -R- - damaged': 1000,
+                'Rearlamp -R- - good': 0,
+                'Sideboard -L- - damaged': 1500,
+                'Sideboard -L- - good': 0,
+                'Sideboard -R- - damaged': 1500,
+                'Sideboard -R- - good': 0
+            }
+        }
+
+        # Function to load the model based on vehicle type
+        def load_model(vehicle_type):
+            model_path = MODEL_PATHS.get(vehicle_type)
+            if not model_path:
+                st.write("Invalid vehicle type selected.")
+                return None
+            
+            yolov5_repo_dir = r'/content/drive/MyDrive/CODE_OBJECT_DETECTION/yolov5'
+            
+            original_dir = os.getcwd()
+            try:
+                os.chdir(yolov5_repo_dir)
+                model = torch.hub.load('.', 'custom', path=model_path, source='local', force_reload=True)
+                model.eval()
+                st.write(f"Model for {vehicle_type} loaded successfully.")
+            except Exception:
+                st.write("Failed to load the model.")
+                return None
+            finally:
+                os.chdir(original_dir)
+            
+            return model
+
+        # Load the corresponding model
+        vehicle_type = st.selectbox("Select Vehicle Type", ["2wheeler", "4wheeler", "6wheeler"])
+        model = load_model(vehicle_type)
+
+        if model:
+            uploaded_file = st.file_uploader("Upload an image of the vehicle", type=["jpg", "jpeg", "png"])
+            
+            if uploaded_file is not None:
+                image = Image.open(uploaded_file)
+                st.image(image, caption='Uploaded Image', use_column_width=True)
+
+                # Perform YOLOv5 detection for 2-wheeler, 4-wheeler, and 6-wheeler
+                results = model(image)
+                if results.xyxy[0].shape[0] == 0:  # Check if no objects were detected
+                    st.write("No damage detected in the uploaded image.")
+                else:
+                    st.image(results.render()[0], caption='Detected Damage', use_column_width=True)
+
+                    # Calculate the cost based on detection
+                    detected_classes = results.pred[0][:, -1].int().tolist()
+                    for detected_class in detected_classes:
+                        damage_detected = results.names[detected_class]
+                        cost = PARTS[vehicle_type].get(damage_detected, "Damage type not recognized")
+
+                        if isinstance(cost, int):
+                            st.write(f"Detected {damage_detected}. Estimated repair cost: ₹{cost}")
+                        else:
+                            st.write(cost).. explain each parat 
